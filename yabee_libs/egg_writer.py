@@ -1,7 +1,7 @@
 from mathutils import *
 from math import pi
 # from .texture_processor import PbrTextures, TextureBaker
-from .texture_processor import PbrTextures
+from .texture_processor import PbrTextures, find_image_texture_node
 
 from .utils import *
 import sys
@@ -157,6 +157,16 @@ class Group:
     def get_full_egg_str(self, level=0):
         return ''.join(self.get_full_egg_str_arr(level))
 
+    def scalar_attrib_to_key(self, key):
+        key = key.lower()
+
+        if key.startswith('scroll-'):
+            # The importer imported these as scroll-
+            # but the exporter writes them as scroll_ since that's the real Panda3D name
+            return key.replace('-', '_')
+
+        return key
+
     def get_full_egg_str_arr(self, level=0):
         """
         Create and return representation of the EGG  <Group> with hierarchy, started from self.object.
@@ -191,6 +201,10 @@ class Group:
                     'from-collide-mask', 'bin', 'alpha',
                     'draw-order', 'decal', 'fps', 'blend',
                     'visibility',
+                    # UV scroll properties
+                    'scroll-u', 'scroll-v', 'scroll-w',
+                    # Flag properties
+                    'portal', 'occluder', 'polylight', 'indexed',
                 ]
                 # Tags that are formatted as <tagName> { tagValue }
                 single_attribs = [
@@ -198,26 +212,58 @@ class Group:
                     'dart', 'model',
                     'switch', 'dcs',
                 ]
-                # Tags commonly used in the <Tag> tagName { tagValue } format.
-                # Most egg importers do not designate which attributes are <Tag>
-                # values, so we have to guess based on the most commonly used custom <Tag>s.
-                tag_attribs = [
-                    'cam',
-                ]
+                single_attrib_to_key = {
+                    'collide': 'Collide',
+                    'billboard': 'Billboard',
+                    'dart': 'Dart',
+                    'model': 'Model',
+                    'switch': 'Switch',
+                    'dcs': 'DCS'
+                }
+                # Tags in the <Tag> tagName { tagValue } format are now handled
+                # via the tag_XXX pattern below (no hardcoded tag names)
+                tag_attribs = []
 
                 for key in self.object.keys():
                     if key.lower() in scalar_attribs:
-                        egg_str.append('%s<Scalar> %s { %s }\n' % ('  ' * (level + 1), key, self.object[key]))
+                        egg_str.append('%s<Scalar> %s { %s }\n' % ('  ' * (level + 1), self.scalar_attrib_to_key(key), self.object[key]))
                     if key.lower() in single_attribs:
-                        egg_str.append('%s<%s> { %s }\n' % ('  ' * (level + 1), key, self.object[key]))
-                    if key.lower() in tag_attribs:
-                        egg_str.append('%s<Tag> %s { %s }\n' % ('  ' * (level + 1), key, self.object[key]))
+                        egg_str.append('%s<%s> { %s }\n' % ('  ' * (level + 1), single_attrib_to_key[key.lower()], self.object[key]))
 
                     # Accounting for Loonaticx's blender-egg-importer
                     # adding a delimiter to the key ObjectType when
                     # a single object holds multiple ObjectType tags.
                     if 'objecttype' in key.lower():
                         egg_str.append('%s<ObjectType> { %s }\n' % ('  ' * (level + 1), self.object[key]))
+
+                    # Handle tag_XXX properties (custom tags from Panda3D Tools panel)
+                    # Format: tag_1, tag_2, etc. with value "tagname:tagvalue"
+                    if key.lower().startswith('tag_'):
+                        tag_value = self.object[key]
+                        if ':' in str(tag_value):
+                            tag_name, tag_val = str(tag_value).split(':', 1)
+                            egg_str.append('%s<Tag> %s { %s }\n' % ('  ' * (level + 1), tag_name, tag_val))
+
+                # LOD: export <SwitchCondition> if lod-in or lod-out is nonzero
+                lod_in = float(self.object.get('lod-in', 0))
+                lod_out = float(self.object.get('lod-out', 0))
+
+                if lod_in != 0.0 or lod_out != 0.0:
+                    lod_fade = float(self.object.get('lod-fade', 1.0))
+                    lod_cx = float(self.object.get('lod-center-x', 0.0))
+                    lod_cy = float(self.object.get('lod-center-y', 0.0))
+                    lod_cz = float(self.object.get('lod-center-z', 0.0))
+                    indent = '  ' * (level + 1)
+
+                    fade_str = '{:g}'.format(lod_fade)
+                    egg_str.append(
+                        '%s<SwitchCondition> { <Distance> { %g %g %s '
+                        '<Vertex> { %g %g %g } } }\n' % (
+                            indent,
+                            lod_in, lod_out, fade_str,
+                            lod_cx, lod_cy, lod_cz,
+                        )
+                    )
 
             if self._yabee_object:
                 for line in self._yabee_object.get_full_egg_str().splitlines():
@@ -772,9 +818,15 @@ class EGGMeshObjectData(EGGBaseObjectData):
                                 # and it connects to one of our known sockets...
                                 if link.to_node.name == "Principled BSDF":
                                     if link.to_socket.name in nodeNames.keys():
-                                        textureNode = link.from_node
-                                        # we have to find the texture name here.
-                                        nodeNames[link.to_socket.name] = textureNode.name
+                                        directNode = link.from_node
+                                        # Recursively search upstream for Image Texture nodes
+                                        # This handles Mix Color / intermediate nodes
+                                        if directNode.type == 'TEX_IMAGE' and hasattr(directNode, 'image'):
+                                            textureNode = directNode
+                                        else:
+                                            textureNode = find_image_texture_node(directNode)
+                                        if textureNode:
+                                            nodeNames[link.to_socket.name] = textureNode.name
 
                             for texNodes in ['Base Color', 'Normal']:
                                 tex = nodeNames[texNodes]
@@ -1237,7 +1289,7 @@ def get_egg_materials_str(object_names=None):
                 if obj.yabee_name == name:
                     objects.append(obj)
     if not objects:
-        return ''
+        return '', set(), {}
 
     mat_str = ''
     used_materials = get_used_materials(objects)

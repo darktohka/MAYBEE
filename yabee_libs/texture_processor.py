@@ -14,6 +14,39 @@ BAKE_TYPES = {
 }
 
 
+def find_image_texture_node(node, visited=None):
+    """
+    Recursively search upstream from a node to find Image Texture nodes.
+    This allows finding textures even when they're connected through
+    intermediate nodes like Mix Color.
+
+    @param node: The starting node to search from
+    @param visited: Set of already visited nodes to prevent infinite loops
+    @return: Image Texture node if found, None otherwise
+    """
+    if visited is None:
+        visited = set()
+
+    # Avoid infinite loops in case of cyclic connections
+    if node in visited:
+        return None
+    visited.add(node)
+
+    # Check if this node is an Image Texture node
+    if node.type == 'TEX_IMAGE' and hasattr(node, 'image'):
+        return node
+
+    # Otherwise, recursively search all inputs
+    for input_socket in node.inputs:
+        if input_socket.is_linked:
+            for link in input_socket.links:
+                result = find_image_texture_node(link.from_node, visited)
+                if result:
+                    return result
+
+    return None
+
+
 class PbrTextures:
     def __init__(self, obj_list, uv_img_as_texture, copy_tex, file_path, tex_path):
         self.obj_list = obj_list[:]
@@ -63,9 +96,18 @@ class PbrTextures:
 
                                 # textureNode = None
                                 if link.to_socket.name in nodeNames.keys():
-                                    textureNode = link.from_node
-
-                                    if hasattr(textureNode, 'image'):
+                                    directNode = link.from_node
+                                    
+                                    # Try to find an Image Texture node
+                                    # First check if the direct connection is an Image Texture
+                                    if hasattr(directNode, 'image') and directNode.type == 'TEX_IMAGE':
+                                        textureNode = directNode
+                                    else:
+                                        # If not, recursively search upstream for Image Texture nodes
+                                        # This handles cases where Mix Color or other nodes are in between
+                                        textureNode = find_image_texture_node(directNode)
+                                    
+                                    if textureNode and hasattr(textureNode, 'image'):
                                         if not textureNode.image:
                                             print(
                                                 "WARNING: Texture node has no image assigned!",
@@ -187,9 +229,9 @@ class PbrTextures:
                                             'scalars': scalars,
                                             'transform': transform
                                         }
-                                else:
-                                    print("WARNING: The Panda3D compatible Principled BSDF shader not found. "
-                                          "Texture was not exported!")
+                                    else:
+                                        print("WARNING: No Image Texture node found upstream from", 
+                                              link.to_socket.name, "socket for object", obj.name)
 
         return tex_list
 

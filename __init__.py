@@ -3,6 +3,7 @@ from bpy_extras.io_utils import ExportHelper
 from bpy.props import *
 from bpy.utils import unregister_class
 from .yabee_libs import egg_writer
+from . import panda3d_tools_panel
 
 bl_info = {
     "name": "Panda3D Egg Exporter (MAYBEE)",
@@ -465,9 +466,15 @@ def register():
         bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
     # Add link for export function to use in another addon
     __builtins__['p3d_egg_export'] = egg_writer.write_out
+    
+    # Register Panda3D Tools panel
+    panda3d_tools_panel.register()
 
 
 def unregister():
+    # Unregister Panda3D Tools panel first
+    panda3d_tools_panel.unregister()
+    
     # https://blender.stackexchange.com/questions/123611/registering-classes-in-blender-2-8
     # https://developer.blender.org/docs/release_notes/2.80/python_api/addons/
     if bpy.app.version < (2, 80):
