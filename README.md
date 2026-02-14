@@ -1,7 +1,7 @@
 ![logo](img/logo.png)
 
-Modernized Alternative (of) Yet Another Blender Egg Exporter (MAYBEE)
-==============================================================
+Modernized Alternative (of) Yet Another Blender Egg Exporter (MAYBEE) - with Panda3D Tools
+==========================================================================================
 *Technically MAYABEE, but I don't want to call it that.*
 
 ----------------------------------
@@ -20,9 +20,20 @@ MAYBEE has support for exporting the following:
 - Armature (skeleton) animation
 - ShapeKeys (morph) animation
 - Non-cyclic NURBS Curves
+- LODs
 
 # Limitations
 The following are currently not supported/implemented by MAYBEE:
-- Properties/tags
 - Texture baking via Cycles
 - Non-Shader Mode for Materials & Textures
+
+# Extra features in the `darktohka` fork
+
+![Panda3D Tools](examples/P3DTools.png)
+
+There are some extra features in the `darktohka` fork:
+- Panda3D Tools GUI that allows lots of egg properties to be set for each node
+- Fixed Mix Shader problem that resulted in textures disappearing when connected to a mix shader
+- Added new export options for LODs and more
+
+**To be used with the darktohka [blender-egg-importer](https://github.com/darktohka/blender-egg-importer) fork!**

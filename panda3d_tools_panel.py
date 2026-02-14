@@ -718,10 +718,6 @@ def update_object_types(self, context):
     if not obj:
         return
 
-    print('obj keys', list(obj.keys()))
-    for k in obj.keys():
-        print(f'  {k}: {obj[k]}')
-
     # First, remove all existing objecttype properties
     keys_to_remove = [k for k in obj.keys() if k.lower().startswith('objecttype')]
     for key in keys_to_remove:
