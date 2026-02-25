@@ -8,6 +8,8 @@ every draw, so there is no separate ``panda3d_tools`` IDProperty group on
 the object.
 """
 
+import os
+
 import bpy
 from bpy.props import (
     BoolProperty,
@@ -18,6 +20,76 @@ from bpy.props import (
     CollectionProperty,
     PointerProperty,
 )
+
+
+# ==================== PRC FILE PARSING ====================
+
+# Cached list of object-type names parsed from user-supplied .prc files.
+# Refreshed explicitly via the add/remove/refresh operators.
+_prc_object_type_names: list[str] = []
+_prc_needs_refresh: bool = True
+
+
+def parse_prc_file(filepath: str) -> list[str]:
+    """Parse a .prc file and return egg-object-type names found in it.
+
+    Lines like::
+
+        egg-object-type-camera-barrier  <Scalar> collide-mask …
+
+    yield ``"camera-barrier"``.
+    """
+    object_types: list[str] = []
+    prefix = "egg-object-type-"
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
+            for raw_line in fh:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or line.startswith("//"):
+                    continue
+                if line.lower().startswith(prefix):
+                    rest = line[len(prefix):]
+                    type_name = rest.split()[0] if rest.split() else rest
+                    if type_name:
+                        object_types.append(type_name.lower())
+    except (IOError, OSError):
+        pass
+    return object_types
+
+
+def refresh_prc_object_types():
+    """Re-parse every configured .prc file and rebuild the cache.
+
+    Duplicates and types that already appear in the hardcoded
+    ``OBJECT_TYPES`` list are silently skipped.
+    """
+    global _prc_object_type_names, _prc_needs_refresh
+    _prc_needs_refresh = False
+    _prc_object_type_names = []
+
+    try:
+        prefs = bpy.context.preferences.addons[__package__].preferences
+    except (KeyError, AttributeError):
+        return
+
+    hardcoded = {t[0] for t in OBJECT_TYPES}
+    seen: set[str] = set()
+
+    for entry in prefs.prc_files:
+        fp = bpy.path.abspath(entry.filepath)
+        if not fp or not os.path.isfile(fp):
+            continue
+        for tname in parse_prc_file(fp):
+            if tname not in hardcoded and tname not in seen:
+                _prc_object_type_names.append(tname)
+                seen.add(tname)
+
+
+def get_prc_object_type_names() -> list[str]:
+    """Return the current list of PRC-sourced object-type names."""
+    if _prc_needs_refresh:
+        refresh_prc_object_types()
+    return _prc_object_type_names
 
 
 # ==================== CONSTANTS ====================
@@ -129,6 +201,7 @@ OBJECT_TYPES = [
     ('ghost', "ghost", "Ghost object type"),
     ('glow', "glow", "Glow object type"),
     ('bubble', "bubble", "Bubble object type"),
+    ('shadow-cast', "shadow-cast", "Shadow-casting object type")
 ]
 
 # Flags (each becomes a separate property)
@@ -249,12 +322,23 @@ def sync_settings_from_object(settings, obj):
             prop_name = 'objecttype_' + otype_id.replace('-', '_')
             setattr(settings, prop_name, False)
 
+        # Collect all objecttype values on the object for quick lookup
+        _obj_type_values: set[str] = set()
         for key in obj.keys():
             if key.lower().startswith('objecttype'):
                 otype_value = str(obj[key])
+                _obj_type_values.add(otype_value)
                 prop_name = 'objecttype_' + otype_value.replace('-', '_')
                 if hasattr(settings, prop_name):
                     setattr(settings, prop_name, True)
+
+        # --- PRC Object types ---
+        prc_names = get_prc_object_type_names()
+        settings.prc_object_types.clear()
+        for tname in prc_names:
+            item = settings.prc_object_types.add()
+            item.name = tname
+            item.enabled = tname in _obj_type_values
 
         # --- Flags ---
         for flag_id, flag_name, _ in PROPERTY_FLAGS:
@@ -283,6 +367,16 @@ def sync_settings_from_object(settings, obj):
 
 
 # ==================== PROPERTY GROUPS ====================
+
+class PrcObjectTypeItem(bpy.types.PropertyGroup):
+    """A single PRC-sourced object type with an enabled toggle."""
+    # 'name' is inherited from PropertyGroup; we store the type id there.
+    enabled: BoolProperty(
+        name="Enabled",
+        default=False,
+        update=lambda self, ctx: _on_prc_object_type_toggled(self, ctx),
+    )
+
 
 class Panda3DTagProperty(bpy.types.PropertyGroup):
     """Property group for a single tag (key-value pair)"""
@@ -448,6 +542,10 @@ class Panda3DToolsSettings(bpy.types.PropertyGroup):
     objecttype_ghost: BoolProperty(name="ghost", default=False, update=lambda self, ctx: update_object_types(self, ctx))
     objecttype_glow: BoolProperty(name="glow", default=False, update=lambda self, ctx: update_object_types(self, ctx))
     objecttype_bubble: BoolProperty(name="bubble", default=False, update=lambda self, ctx: update_object_types(self, ctx))
+    objecttype_shadow_cast: BoolProperty(name="shadow-cast", default=False, update=lambda self, ctx: update_object_types(self, ctx))
+
+    # ---- PRC Object Types (dynamic, from .prc files) ----
+    prc_object_types: CollectionProperty(type=PrcObjectTypeItem)
 
     # ---- Flags (each separate property) ----
     flag_portal: BoolProperty(name="portal", default=False, update=lambda self, ctx: update_flags(self, ctx))
@@ -710,10 +808,8 @@ def update_lod_property(self, context):
         obj['lod-center-z'] = self.lod_center_z
 
 
-def update_object_types(self, context):
-    """Update the objecttype_XXX properties on the object"""
-    if _syncing:
-        return
+def _write_all_object_types(settings, context):
+    """Write all object-type custom properties (hardcoded + PRC) to the object."""
     obj = get_object_from_context(context)
     if not obj:
         return
@@ -756,13 +852,35 @@ def update_object_types(self, context):
         ('objecttype_ghost', 'ghost'),
         ('objecttype_glow', 'glow'),
         ('objecttype_bubble', 'bubble'),
+        ('objecttype_shadow_cast', 'shadow-cast'),
     ]
 
     idx = 1
     for prop_name, type_value in object_type_props:
-        if getattr(self, prop_name, False):
+        if getattr(settings, prop_name, False):
             obj[f'objecttype_{idx}'] = type_value
             idx += 1
+
+    # PRC-sourced object types
+    for item in settings.prc_object_types:
+        if item.enabled:
+            obj[f'objecttype_{idx}'] = item.name
+            idx += 1
+
+
+def update_object_types(self, context):
+    """Update the objecttype_XXX properties on the object"""
+    if _syncing:
+        return
+    _write_all_object_types(self, context)
+
+
+def _on_prc_object_type_toggled(self, context):
+    """Called when a PRC object-type toggle changes."""
+    if _syncing:
+        return
+    settings = context.window_manager.panda3d_tools
+    _write_all_object_types(settings, context)
 
 
 def update_flags(self, context):
@@ -1103,6 +1221,16 @@ class PANDA3D_PT_properties_subpanel(bpy.types.Panel):
         row = col.row(align=True)
         row.prop(settings, "objecttype_glow", toggle=True)
         row.prop(settings, "objecttype_bubble", toggle=True)
+        row.prop(settings, "objecttype_shadow_cast", toggle=True)
+
+        # PRC Object Types (loaded from .prc files via Addon Preferences)
+        if len(settings.prc_object_types) > 0:
+            # Draw in rows of 3 for consistency with the hardcoded grid
+            items = list(settings.prc_object_types)
+            for i in range(0, len(items), 3):
+                row = col.row(align=True)
+                for item in items[i:i + 3]:
+                    row.prop(item, "enabled", text=item.name, toggle=True)
 
         # Flags
         box = layout.box()
@@ -1167,6 +1295,7 @@ class PANDA3D_OT_tag_remove(bpy.types.Operator):
 
 # Property group classes
 property_classes = (
+    PrcObjectTypeItem,
     Panda3DTagProperty,
     Panda3DToolsSettings,
 )

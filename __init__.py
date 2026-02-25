@@ -17,6 +17,106 @@ bl_info = {
 }
 
 
+# --------------- PRC Files (Addon Preferences) ----------------
+
+
+class PrcFilePathEntry(bpy.types.PropertyGroup):
+    """Stores the path of a single .prc file."""
+    filepath: StringProperty(name="File Path", subtype='FILE_PATH')
+
+
+class MAYBEE_UL_prc_files(bpy.types.UIList):
+    """UIList to display configured .prc files."""
+    bl_idname = "MAYBEE_UL_prc_files"
+
+    def draw_item(self, context, layout, data, item, icon,
+                  active_data, active_property, index):
+        layout.label(text=item.filepath if item.filepath else "<empty>",
+                     icon='FILE')
+
+
+class MAYBEE_OT_prc_file_add(bpy.types.Operator):
+    """Open a file browser to select a .prc file"""
+    bl_idname = "maybee.prc_file_add"
+    bl_label = "Add PRC File"
+
+    filepath: StringProperty(subtype='FILE_PATH')
+    filter_glob: StringProperty(default="*.prc", options={'HIDDEN'})
+
+    def execute(self, context):
+        prefs = context.preferences.addons[__package__].preferences
+        entry = prefs.prc_files.add()
+        entry.filepath = self.filepath
+        prefs.prc_files_index = len(prefs.prc_files) - 1
+        panda3d_tools_panel.refresh_prc_object_types()
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+
+class MAYBEE_OT_prc_file_remove(bpy.types.Operator):
+    """Remove the selected .prc file from the list"""
+    bl_idname = "maybee.prc_file_remove"
+    bl_label = "Remove PRC File"
+
+    def execute(self, context):
+        prefs = context.preferences.addons[__package__].preferences
+        idx = prefs.prc_files_index
+        if 0 <= idx < len(prefs.prc_files):
+            prefs.prc_files.remove(idx)
+            prefs.prc_files_index = min(idx, len(prefs.prc_files) - 1)
+            panda3d_tools_panel.refresh_prc_object_types()
+        return {'FINISHED'}
+
+
+class MAYBEE_OT_prc_files_refresh(bpy.types.Operator):
+    """Re-read all .prc files and refresh the available object types"""
+    bl_idname = "maybee.prc_files_refresh"
+    bl_label = "Refresh PRC Object Types"
+
+    def execute(self, context):
+        panda3d_tools_panel.refresh_prc_object_types()
+        count = len(panda3d_tools_panel.get_prc_object_type_names())
+        self.report({'INFO'}, f"Loaded {count} object type{'s' if count != 1 else ''} from PRC files")
+        return {'FINISHED'}
+
+
+class MAYBEE_AddonPreferences(bpy.types.AddonPreferences):
+    bl_idname = __package__
+
+    prc_files: CollectionProperty(type=PrcFilePathEntry)
+    prc_files_index: IntProperty(default=0)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Additional .prc files for object types:")
+
+        row = layout.row()
+        row.template_list(
+            "MAYBEE_UL_prc_files", "",
+            self, "prc_files",
+            self, "prc_files_index",
+            rows=3,
+        )
+        col = row.column(align=True)
+        col.operator("maybee.prc_file_add", icon='ADD', text="")
+        col.operator("maybee.prc_file_remove", icon='REMOVE', text="")
+
+        layout.operator("maybee.prc_files_refresh",
+                        icon='FILE_REFRESH', text="Refresh Object Types")
+
+        # Show currently loaded PRC types
+        prc_types = panda3d_tools_panel.get_prc_object_type_names()
+        if prc_types:
+            box = layout.box()
+            box.label(text=f"Loaded object types from PRC files ({len(prc_types)}):")
+            flow = box.column_flow(columns=4, align=True)
+            for t in prc_types:
+                flow.label(text=t)
+
+
 # --------------- Properties --------------------
 
 
@@ -424,6 +524,12 @@ def menu_func_export(self, context):
 
 
 classes = (
+    PrcFilePathEntry,
+    MAYBEE_UL_prc_files,
+    MAYBEE_OT_prc_file_add,
+    MAYBEE_OT_prc_file_remove,
+    MAYBEE_OT_prc_files_refresh,
+    MAYBEE_AddonPreferences,
     EGGBakeProperty,
     EGGAnimationProperty,
     EGGAnimList,
@@ -469,6 +575,10 @@ def register():
     
     # Register Panda3D Tools panel
     panda3d_tools_panel.register()
+
+    # Trigger initial PRC file parsing (uses lazy refresh on first panel draw
+    # if preferences are not yet available at register time)
+    panda3d_tools_panel._prc_needs_refresh = True
 
 
 def unregister():
